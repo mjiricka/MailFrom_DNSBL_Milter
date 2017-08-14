@@ -1,0 +1,134 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+
+"""
+Milter for filtering emails according MAIL FROM domain. Domains are reversed
+to IP address and checked against DNSBL database.
+
+Script takes one parameter: path where to create socket.
+
+author: Martin Jiřička (mjiricka@gmail.com)
+licence: The Unlicense (https://unlicense.org)
+2017
+"""
+
+
+import sys
+from multiprocessing import Process
+import Milter
+from Milter.utils import parse_addr
+import dns.resolver
+
+
+DNSBL = 'zen.spamhaus.org'
+
+
+# ===============================================
+# LOGGING
+# ===============================================
+
+def debug_log(msg):
+    print(msg)
+
+def no_log(_):
+    pass
+
+log = no_log
+
+
+# ===============================================
+# DNS
+# ===============================================
+
+def is_domain_banned(domain):
+    """Checks whether domain is banned under DNSBL domain. It only checks
+       the first A record!"""
+    def reverse_ip(ip):
+        """Reverse IP: 10.0.0.1 => 1.0.0.10"""
+        return '.'.join(str(ip).split('.')[::-1])
+
+    def resolve(address, record_type):
+        """Resolve DNS record for the address. Returns `None` if not found."""
+        try:
+            return dns.resolver.query(address, record_type)
+        except:
+            return None
+
+    answers = resolve(domain, 'A')
+
+    if answers:
+        answer = answers[0]
+
+        log('A record for given domain {0} is {1}'.format(domain, answer))
+
+        # Construct a new address under given DNSBL domain.
+        answer_reversed = reverse_ip(answer)
+        dnsbl_lookup = answer_reversed + '.' + DNSBL
+
+        log('Trying address: ' + dnsbl_lookup)
+        dnsbl_answers = resolve(dnsbl_lookup, 'A')
+
+        if dnsbl_answers:
+            log('Address {0} is blocked under {1}.'.format(answer, DNSBL))
+            return True
+        else:
+            log('Address {0} is NOT blocked under {1}.'.format(answer, DNSBL))
+            return False
+    else:
+        log('No A record found for the domain {0}'.format(domain))
+        return False
+
+
+# ===============================================
+# MILTER
+# ===============================================
+
+class MailFrom_DNSBL_Milter(Milter.Base):
+
+    def __init__(self):  # A new instance with each new connection.
+        self.id = Milter.uniqueID()  # Integer incremented with each call.
+
+    def envfrom(self, addr, *params):
+        log('Test ' + addr)
+
+        address = parse_addr(addr)
+        if len(address) != 2:
+            self.setreply('550', '5.7.1', 'Use a valid email according RFC 5321/5322')
+            return Milter.REJECT
+
+        domain = address[1]
+
+        if is_domain_banned(domain):
+            msg = 'MAIL FROM domain [' + domain + '] blocked using ' + DNSBL
+            self.setreply('550', '5.7.1', msg)
+            log('REJECT')
+            return Milter.REJECT
+        else:
+            log('ACCEPT')
+            return Milter.ACCEPT
+
+
+# ===============================================
+# MAIN
+# ===============================================
+
+def main(socket):
+    """The main method."""
+    job = Process()
+    job.start()
+    # Register with Milter factory.
+    Milter.factory = MailFrom_DNSBL_Milter
+    # Mails are not modified, so no flags.
+    Milter.set_flags(0)
+    timeout = 60
+    Milter.runmilter('dnsblfilter', socket, timeout)
+    job.join()
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print('USAGE: ' + sys.argv[0] + ' <socket_path>')
+    else:
+        main(socket=sys.argv[1])
+
+
+# EOF

@@ -1,0 +1,13 @@
+[Unit]
+Description=DNSBL Milter for MAIL FROM address
+After=network.target
+
+[Service]
+Type=simple
+User=postfix
+ExecStart=/usr/bin/python2.7 /usr/local/bin/dnsblmilter /var/spool/postfix/var/run/dnsblmilter/socket
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
+
